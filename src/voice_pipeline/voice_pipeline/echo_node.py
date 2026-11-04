@@ -9,7 +9,7 @@ class EchoNode(Node):
         self.create_subscription(String, 'user_text', self.cb, 10)
 
     def cb(self, msg):
-        self.get_logger().info(f'Reçu : {msg.data}')
+        self.get_logger().info(f'Received : {msg.data}')
         self.pub.publish(String(data=msg.data.upper()))
 
 def main():
