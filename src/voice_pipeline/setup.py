@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'echo_node = voice_pipeline.echo_node:main',
             'llm_node = voice_pipeline.llm_node:main',
+            'stt_node = voice_pipeline.stt_node:main',
         ],
     },
 )
