@@ -71,7 +71,7 @@ services:
     # nodes calls it yet — see the README.
     # 2.48.5 is the current `stable`/`latest`; pinned for the same reason as above.
     image: docker.n8n.io/n8nio/n8n:2.48.5
-    container_name: n8n
+    container_name: n8n_ros
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:5678:5678"
