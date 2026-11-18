@@ -1,4 +1,5 @@
-# Speech services for the voice_pipeline nodes: Whisper (STT) and Kokoro (TTS).
+# Services the voice_pipeline nodes talk to: Whisper (STT), Kokoro (TTS) and n8n
+# for automations.
 #
 # Ollama is NOT part of this stack - it runs on its own, see the README.
 #
@@ -65,5 +66,44 @@ services:
               count: all
               capabilities: [gpu]
 
+  n8n:
+    # Automation layer, reached over HTTP like the rest. Nothing in the ROS
+    # nodes calls it yet — see the README.
+    # 2.48.5 is the current `stable`/`latest`; pinned for the same reason as above.
+    image: docker.n8n.io/n8nio/n8n:2.48.5
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:5678:5678"
+    environment:
+      # Default is true, which drops the session cookie over plain HTTP from
+      # anything but localhost — i.e. no login over the VPN. Set it back to
+      # true the day n8n sits behind HTTPS.
+      - N8N_SECURE_COOKIE=false
+      # Host n8n believes it is reachable at: used in the editor URL and in the
+      # webhook URLs it shows you. Harmless on localhost, wrong over a VPN.
+      - N8N_HOST=${N8N_HOST:-localhost}
+      # Timezone for the Schedule Trigger node, and for the container's clock.
+      - GENERIC_TIMEZONE=${TZ:-Europe/Paris}
+      - TZ=${TZ:-Europe/Paris}
+      # Recommended by the n8n docs: 0600 on the settings file.
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # N8N_RUNNERS_ENABLED is deliberately absent: deprecated since n8n 2.0,
+      # task runners are on by default.
+    volumes:
+      # Holds the SQLite database AND the auto-generated encryption key that
+      # your stored credentials are encrypted with. Lose this volume and the
+      # credentials in every workflow become unreadable.
+      - n8n-data:/home/node/.n8n
+    healthcheck:
+      # Through node, which is certainly in this image, against n8n's /healthz.
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://127.0.0.1:5678/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 volumes:
   hf-hub-cache:
+  n8n-data:

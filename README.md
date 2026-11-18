@@ -89,8 +89,8 @@ Both are plain scripts (not entry points), run them with `python3`:
   `sudo apt install libportaudio2`)
 - An [Ollama](https://ollama.com) server with the generation model pulled
   (`ollama pull qwen3:8b`)
-- The two speech services, which `docker-compose.yml` provides (see below):
-  a Whisper server on `POST /v1/audio/transcriptions` and a
+- The speech services, which `docker-compose.yml` provides (see below): a Whisper
+  server on `POST /v1/audio/transcriptions` and a
   [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server on
   `POST /v1/audio/speech` with PCM streaming
 
@@ -98,12 +98,19 @@ All three services are reached over plain HTTP, so they can sit on the same mach
 the nodes or on a remote GPU box. The node defaults point at a private VPN address and
 will need to be overridden for any other setup — see the `--ros-args` examples below.
 
-## Speech services
+## Supporting services
 
-`docker-compose.yml` brings up Whisper (Speaches) and Kokoro, both on the GPU, with the
-host ports the nodes expect: `8001` for `stt_url` and `8880` for `tts_url`. Image tags
-are pinned, and the Whisper model is kept resident (`STT_MODEL_TTL=-1`) so an idle pause
-does not cost a model reload on the next utterance.
+`docker-compose.yml` brings up three containers:
+
+| Service    | Host port | What it serves                                     |
+| ---------- | --------- | -------------------------------------------------- |
+| `speaches` | `8001`    | Whisper, the `stt_url` the `stt_node` calls         |
+| `kokoro`   | `8880`    | Kokoro, the `tts_url` the `tts_node` calls          |
+| `n8n`      | `5678`    | automation editor and webhooks                      |
+
+Speaches and Kokoro both run on the GPU. Image tags are pinned, and the Whisper model is
+kept resident (`STT_MODEL_TTL=-1`) so an idle pause does not cost a model reload on the
+next utterance.
 
 It needs Docker Compose v2+ and the NVIDIA Container Toolkit on the host.
 
@@ -122,6 +129,22 @@ Check both are up, and that models persist in the `hf-hub-cache` volume between 
 ```bash
 docker compose ps
 ```
+
+### n8n
+
+n8n is where the assistant will eventually trigger things — a spoken request reaching a
+webhook instead of just an answer. **No node calls it yet**: the container is here so the
+workflows can be built before the ROS side exists. Open it on port `5678` and create the
+owner account on first run.
+
+Two things worth knowing:
+
+- `N8N_SECURE_COOKIE=false` is set because n8n otherwise refuses the session cookie over
+  plain HTTP from anything but localhost, which means no login over the VPN. Set it back
+  to `true` the day n8n sits behind HTTPS.
+- The `n8n-data` volume holds the SQLite database *and* the encryption key n8n generates
+  on first start to encrypt stored credentials. Losing that volume makes the credentials
+  in every workflow unreadable, so it is the one to back up.
 
 Ollama is deliberately not in the stack — it is usually already installed on the machine
 holding the GPU, and the pipeline only needs its HTTP endpoint.
@@ -216,6 +239,7 @@ colcon test --packages-select voice_pipeline && colcon test-result --verbose
 - [ ] Have `stt_node` mute itself on `/tts_speaking`, so the assistant stops hearing itself
 - [ ] Wake word / push-to-talk instead of always-on listening
 - [ ] Barge-in: cut playback when the user starts talking
+- [ ] A node that fires n8n webhooks, so the assistant can act and not only answer
 
 ## License
 
