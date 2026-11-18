@@ -145,6 +145,16 @@ Two things worth knowing:
 - The `n8n-data` volume holds the SQLite database *and* the encryption key n8n generates
   on first start to encrypt stored credentials. Losing that volume makes the credentials
   in every workflow unreadable, so it is the one to back up.
+- n8n has required a login since 1.0 and offers no supported way to disable it. The
+  owner account is local to the container — no n8n.io account, and with no SMTP
+  configured it sends no mail, so the address is just an identifier. That also means
+  **there is no password reset**: keep it in a password manager.
+
+The account can be declared up front rather than created through the signup form, which
+is what the `N8N_OWNER_*` entries in `.env.example` are for. It is opt-in
+(`N8N_OWNER_MANAGED=false` by default), it still produces a login, and it only applies
+to an instance that has no owner yet. The password goes in as a bcrypt hash, with its
+dollar signs doubled so Compose does not read them as variables.
 
 Ollama is deliberately not in the stack — it is usually already installed on the machine
 holding the GPU, and the pipeline only needs its HTTP endpoint.

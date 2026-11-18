@@ -90,6 +90,17 @@ services:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       # N8N_RUNNERS_ENABLED is deliberately absent: deprecated since n8n 2.0,
       # task runners are on by default.
+      #
+      # Owner account declared up front (n8n 2.17+), so a fresh deploy comes up
+      # with it already created instead of showing the signup screen. Opt-in:
+      # left false, n8n behaves normally and the other four are ignored.
+      # This never removes the login, it only skips the form.
+      - N8N_INSTANCE_OWNER_MANAGED_BY_ENV=${N8N_OWNER_MANAGED:-false}
+      - N8N_INSTANCE_OWNER_EMAIL=${N8N_OWNER_EMAIL:-}
+      - N8N_INSTANCE_OWNER_FIRST_NAME=${N8N_OWNER_FIRST_NAME:-}
+      - N8N_INSTANCE_OWNER_LAST_NAME=${N8N_OWNER_LAST_NAME:-}
+      # bcrypt hash, never the password itself — see .env.example.
+      - N8N_INSTANCE_OWNER_PASSWORD_HASH=${N8N_OWNER_PASSWORD_HASH:-}
     volumes:
       # Holds the SQLite database AND the auto-generated encryption key that
       # your stored credentials are encrypted with. Lose this volume and the
