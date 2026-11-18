@@ -89,14 +89,42 @@ Both are plain scripts (not entry points), run them with `python3`:
   `sudo apt install libportaudio2`)
 - An [Ollama](https://ollama.com) server with the generation model pulled
   (`ollama pull qwen3:8b`)
-- A Whisper server exposing `POST /v1/audio/transcriptions` (e.g. Speaches /
-  faster-whisper-server)
-- A [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server exposing
+- The two speech services, which `docker-compose.yml` provides (see below):
+  a Whisper server on `POST /v1/audio/transcriptions` and a
+  [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server on
   `POST /v1/audio/speech` with PCM streaming
 
-The three services are reached over HTTP, so they can run on the same machine
-(`http://localhost:...`) or on a remote GPU box — the defaults above point to a host on
-a private VPN and will need to be overridden.
+All three services are reached over plain HTTP, so they can sit on the same machine as
+the nodes or on a remote GPU box. The node defaults point at a private VPN address and
+will need to be overridden for any other setup — see the `--ros-args` examples below.
+
+## Speech services
+
+`docker-compose.yml` brings up Whisper (Speaches) and Kokoro, both on the GPU, with the
+host ports the nodes expect: `8001` for `stt_url` and `8880` for `tts_url`. Image tags
+are pinned, and the Whisper model is kept resident (`STT_MODEL_TTL=-1`) so an idle pause
+does not cost a model reload on the next utterance.
+
+It needs Docker Compose v2+ and the NVIDIA Container Toolkit on the host.
+
+```bash
+cp .env.example .env     # then set BIND_ADDR
+docker compose up -d
+```
+
+`BIND_ADDR` is the address the two services listen on: `127.0.0.1` when the nodes run on
+the same machine, the server's VPN address when they do not, `0.0.0.0` to serve every
+interface. Neither service authenticates, so `0.0.0.0` belongs on a trusted network
+only. The default is `127.0.0.1`, so a missing `.env` fails closed.
+
+Check both are up, and that models persist in the `hf-hub-cache` volume between restarts:
+
+```bash
+docker compose ps
+```
+
+Ollama is deliberately not in the stack — it is usually already installed on the machine
+holding the GPU, and the pipeline only needs its HTTP endpoint.
 
 ## Build
 
