@@ -22,7 +22,7 @@
         "promptType": "define",
         "text": "={{ $json.body.question }}",
         "options": {
-          "systemMessage": "You are a helpful assistant",
+          "systemMessage": "You are a voice assistant. Your responses are read aloud: answer in English, in two or three sentences at most, with no lists, no markdown, and no emoji.",
           "enableStreaming": true
         }
       },
