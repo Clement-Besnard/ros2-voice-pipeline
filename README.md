@@ -2,10 +2,11 @@
 
 A ROS 2 voice assistant pipeline: microphone → speech-to-text → LLM → spoken reply.
 
-Audio is captured and segmented locally, transcription, generation and synthesis are
-offloaded to self-hosted HTTP services (a Whisper server, [Ollama](https://ollama.com)
-and a [Kokoro](https://github.com/remsky/Kokoro-FastAPI) server), and every stage talks
-over plain ROS 2 topics so any node can be swapped or inspected on its own.
+Audio is captured and segmented locally; transcription, generation and synthesis are
+offloaded to self-hosted HTTP services (a Whisper server, an [n8n](https://n8n.io) agent
+backed by [Ollama](https://ollama.com), and a
+[Kokoro](https://github.com/remsky/Kokoro-FastAPI) server), and every stage talks over
+plain ROS 2 topics so any node can be swapped or inspected on its own.
 
 - ROS 2 **Lyrical** / Python 3.14, `ament_python` package built with `colcon`
 - Workspace root with a single package: `src/voice_pipeline`
@@ -15,7 +16,10 @@ over plain ROS 2 topics so any node can be swapped or inspected on its own.
 
 ```
 microphone ──► stt_node ──► /user_text ──► llm_node ──► /llm_reply ──► tts_node ──► speaker
-                                            echo_node (uppercase stub, for testing)
+                                              │           echo_node (uppercase stub)
+                                              ▼
+                                      n8n AI Agent ──► Ollama
+                                      (memory, tools)
 ```
 
 | Topic            | Type                  | Published by | Consumed by          |
@@ -45,16 +49,37 @@ Empty or punctuation-only transcripts are dropped as Whisper hallucinations.
 | `preroll_ms`       | `300`                                        | Audio kept before speech onset          |
 | `device`           | `-1`                                         | Input device index, `-1` = default      |
 
-**`llm_node`** — subscribes to `/user_text`, calls Ollama's `/api/generate`
-(non-streaming, thinking disabled, model kept warm for 30 min) and publishes the answer
-on `/llm_reply`. The system prompt constrains the model to two or three spoken sentences
-with no markdown, lists or emoji — which cut a typical reply from ~1300 to ~50 tokens.
+**`llm_node`** — subscribes to `/user_text`, POSTs the question to the n8n webhook and
+publishes the agent's answer on `/llm_reply`. It does not talk to Ollama directly: the
+model, its address and the system prompt all live in the n8n workflow, which also gives
+the conversation a memory the node does not have to keep.
 
-| Parameter       | Default                  | Description             |
-| --------------- | ------------------------ | ----------------------- |
-| `ollama_url`    | `http://10.8.0.1:11434`  | Ollama base URL         |
-| `model`         | `qwen3:8b`               | Generation model        |
-| `system_prompt` | see `llm_node.py`        | Voice-oriented prompt   |
+The webhook answers in NDJSON, one object per token, so the node reassembles the
+`"type": "item"` events into a single reply before publishing. The trap worth knowing
+about: n8n returns **HTTP 200 even when the agent fails**, with the reason in a
+`"type": "error"` event, so `raise_for_status` never sees it. The node raises on that
+event instead, and publishes nothing rather than an empty string.
+
+A conversation ends with silence. The node keeps one key while the exchanges follow one
+another, and mints a new one after `session_timeout` seconds of nothing — so the agent
+remembers what you said a minute ago, but does not greet you this evening still holding
+this morning's thread. The key sent to n8n is `<session_id>-<random hex>`; a node restart
+also starts a fresh one. Setting the timeout very high gives you back a single endless
+conversation, and setting it to `0` makes every question stateless.
+
+| Parameter         | Default                             | Description                        |
+| ----------------- | ----------------------------------- | ---------------------------------- |
+| `n8n_url`         | `http://10.8.0.1:5678/webhook/llm`  | Webhook of the agent workflow      |
+| `session_id`      | `ros-voice`                         | Prefix of the conversation key     |
+| `session_timeout` | `300.0`                             | Silence, in seconds, that ends one |
+
+`session_timeout` is a float, so override it as `600.0` rather than `600` — ROS refuses
+the type mismatch.
+
+The system prompt still constrains the model to two or three spoken sentences with no
+markdown, lists or emoji — which cut a typical reply from ~1300 to ~50 tokens — but it is
+now the `systemMessage` of the AI Agent node, in
+`n8n/workflows/basic-workflow.json`.
 
 **`tts_node`** — subscribes to `/llm_reply` and streams it to a Kokoro
 `POST /v1/audio/speech` endpoint as raw 24 kHz mono PCM, playing the chunks as they
@@ -80,7 +105,8 @@ Both are plain scripts (not entry points), run them with `python3`:
   from `/llm_reply` with the round-trip latency.
 - `bench.py` — runs a fixed set of prompts twice, once straight against Ollama and once
   through the ROS graph, and reports prompt/generation token counts, tokens per second,
-  and the ROS overhead.
+  and the overhead. Since `llm_node` goes through n8n, that second figure now measures
+  ROS *and* the agent, which is the honest number for the pipeline as it stands.
 
 ## Requirements
 
@@ -88,15 +114,15 @@ Both are plain scripts (not entry points), run them with `python3`:
 - Python: `requests`, `numpy`, `sounddevice` (which needs PortAudio, e.g.
   `sudo apt install libportaudio2`)
 - An [Ollama](https://ollama.com) server with the generation model pulled
-  (`ollama pull qwen3:8b`)
+  (`ollama pull qwen3:8b`). n8n is what calls it, not the ROS nodes.
 - The speech services, which `docker-compose.yml` provides (see below): a Whisper
   server on `POST /v1/audio/transcriptions` and a
   [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server on
   `POST /v1/audio/speech` with PCM streaming
 
-All three services are reached over plain HTTP, so they can sit on the same machine as
-the nodes or on a remote GPU box. The node defaults point at a private VPN address and
-will need to be overridden for any other setup — see the `--ros-args` examples below.
+Every service is reached over plain HTTP, so they can sit on the same machine as the
+nodes or on a remote GPU box. The node defaults point at a private VPN address and will
+need to be overridden for any other setup — see the `--ros-args` examples below.
 
 ## Supporting services
 
@@ -241,7 +267,7 @@ ros2 run voice_pipeline tts_node
 Point the nodes at your own servers:
 
 ```bash
-ros2 run voice_pipeline llm_node --ros-args -p ollama_url:=http://localhost:11434 -p model:=qwen3:8b
+ros2 run voice_pipeline llm_node --ros-args -p n8n_url:=http://localhost:5678/webhook/llm -p session_id:=desk
 ```
 
 ```bash
@@ -291,14 +317,18 @@ colcon test --packages-select voice_pipeline && colcon test-result --verbose
 ## Roadmap
 
 - [x] Text round trip through ROS (`echo_node`)
-- [x] LLM node on Ollama, tuned for spoken-length answers
+- [x] LLM node tuned for spoken-length answers
 - [x] Streaming microphone capture with VAD-style segmentation and Whisper transcription
 - [x] `tts_node`: speak `/llm_reply` out loud, streamed from Kokoro
 - [x] Launch file to bring the whole pipeline up at once
 - [ ] Have `stt_node` mute itself on `/tts_speaking`, so the assistant stops hearing itself
-- [ ] Wake word / push-to-talk instead of always-on listening
+- [ ] Wake word / push-to-talk instead of always-on listening, which then becomes the
+      conversation boundary in place of the silence timeout
 - [ ] Barge-in: cut playback when the user starts talking
-- [ ] A node that fires n8n webhooks, so the assistant can act and not only answer
+- [x] Route `llm_node` through an n8n AI Agent, which brings conversation memory
+- [ ] Give that agent tools, so the assistant can act and not only answer
+- [ ] Publish `/llm_reply` sentence by sentence as the agent streams, to start speaking
+      sooner
 
 ## License
 
