@@ -1,4 +1,7 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
+
 
 package_name = 'voice_pipeline'
 
@@ -9,6 +12,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,6 +26,7 @@ setup(
             'echo_node = voice_pipeline.echo_node:main',
             'llm_node = voice_pipeline.llm_node:main',
             'stt_node = voice_pipeline.stt_node:main',
+            'tts_node = voice_pipeline.tts_node:main',
         ],
     },
 )

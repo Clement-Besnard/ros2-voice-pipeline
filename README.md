@@ -2,25 +2,27 @@
 
 A ROS 2 voice assistant pipeline: microphone → speech-to-text → LLM → spoken reply.
 
-Audio is captured and segmented locally, transcription and generation are offloaded to
-self-hosted HTTP services (a Whisper server and [Ollama](https://ollama.com)), and every
-stage talks over plain ROS 2 topics so any node can be swapped or inspected on its own.
+Audio is captured and segmented locally, transcription, generation and synthesis are
+offloaded to self-hosted HTTP services (a Whisper server, [Ollama](https://ollama.com)
+and a [Kokoro](https://github.com/remsky/Kokoro-FastAPI) server), and every stage talks
+over plain ROS 2 topics so any node can be swapped or inspected on its own.
 
 - ROS 2 **Lyrical** / Python 3.14, `ament_python` package built with `colcon`
 - Workspace root with a single package: `src/voice_pipeline`
-- Text-to-speech is the next stage and is not implemented yet
+- The loop is closed end to end: it listens, answers and speaks
 
 ## Architecture
 
 ```
-microphone ──► stt_node ──► /user_text ──► llm_node ──► /llm_reply ──► (tts_node, planned)
+microphone ──► stt_node ──► /user_text ──► llm_node ──► /llm_reply ──► tts_node ──► speaker
                                             echo_node (uppercase stub, for testing)
 ```
 
-| Topic        | Type                  | Published by          | Consumed by         |
-| ------------ | --------------------- | --------------------- | ------------------- |
-| `/user_text` | `std_msgs/msg/String` | `stt_node`            | `llm_node`          |
-| `/llm_reply` | `std_msgs/msg/String` | `llm_node`            | TTS / any subscriber |
+| Topic            | Type                  | Published by | Consumed by          |
+| ---------------- | --------------------- | ------------ | -------------------- |
+| `/user_text`     | `std_msgs/msg/String` | `stt_node`   | `llm_node`           |
+| `/llm_reply`     | `std_msgs/msg/String` | `llm_node`   | `tts_node`           |
+| `/tts_speaking`  | `std_msgs/msg/Bool`   | `tts_node`   | nothing yet, see Roadmap |
 
 ### Nodes
 
@@ -54,6 +56,19 @@ with no markdown, lists or emoji — which cut a typical reply from ~1300 to ~50
 | `model`         | `qwen3:8b`               | Generation model        |
 | `system_prompt` | see `llm_node.py`        | Voice-oriented prompt   |
 
+**`tts_node`** — subscribes to `/llm_reply` and streams it to a Kokoro
+`POST /v1/audio/speech` endpoint as raw 24 kHz mono PCM, playing the chunks as they
+arrive on a `sounddevice` output stream. Playback waits for a 200 ms pre-buffer before
+starting, so a network hiccup does not cut the voice mid-word, and the time to first
+audio is logged. Replies are queued, so a second answer never talks over the first.
+While speaking, the node publishes `true` on `/tts_speaking`, and `false` once the queue
+has been empty for 300 ms.
+
+| Parameter  | Default                 | Description              |
+| ---------- | ----------------------- | ------------------------ |
+| `tts_url`  | `http://10.8.0.1:8880`  | Kokoro server base URL   |
+| `voice`    | `af_heart`              | Kokoro voice             |
+
 **`echo_node`** — a stand-in for `llm_node`: republishes `/user_text` in uppercase on
 `/llm_reply`. Useful to check the plumbing without a GPU or network round trip.
 
@@ -69,15 +84,17 @@ Both are plain scripts (not entry points), run them with `python3`:
 
 ## Requirements
 
-- ROS 2 Lyrical with `rclpy` and `std_msgs`
+- ROS 2 Lyrical with `rclpy`, `std_msgs`, `launch` and `launch_ros`
 - Python: `requests`, `numpy`, `sounddevice` (which needs PortAudio, e.g.
   `sudo apt install libportaudio2`)
 - An [Ollama](https://ollama.com) server with the generation model pulled
   (`ollama pull qwen3:8b`)
 - A Whisper server exposing `POST /v1/audio/transcriptions` (e.g. Speaches /
   faster-whisper-server)
+- A [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server exposing
+  `POST /v1/audio/speech` with PCM streaming
 
-Both services are reached over HTTP, so they can run on the same machine
+The three services are reached over HTTP, so they can run on the same machine
 (`http://localhost:...`) or on a remote GPU box — the defaults above point to a host on
 a private VPN and will need to be overridden.
 
@@ -91,7 +108,13 @@ source install/setup.bash
 
 ## Run
 
-Each command goes in its own terminal, with `install/setup.bash` sourced.
+The whole pipeline at once, with `install/setup.bash` sourced:
+
+```bash
+ros2 launch voice_pipeline voice.launch.py
+```
+
+Or one node per terminal, which is easier to debug:
 
 ```bash
 ros2 run voice_pipeline stt_node
@@ -99,6 +122,10 @@ ros2 run voice_pipeline stt_node
 
 ```bash
 ros2 run voice_pipeline llm_node
+```
+
+```bash
+ros2 run voice_pipeline tts_node
 ```
 
 Point the nodes at your own servers:
@@ -111,6 +138,10 @@ ros2 run voice_pipeline llm_node --ros-args -p ollama_url:=http://localhost:1143
 ros2 run voice_pipeline stt_node --ros-args -p stt_url:=http://localhost:8001 -p language:=fr
 ```
 
+```bash
+ros2 run voice_pipeline tts_node --ros-args -p tts_url:=http://localhost:8880 -p voice:=af_heart
+```
+
 Watch the replies:
 
 ```bash
@@ -121,6 +152,12 @@ Inject text without a microphone:
 
 ```bash
 ros2 topic pub --once /user_text std_msgs/msg/String "data: 'whats the weather in paris today ?'"
+```
+
+Make it speak without the microphone or the LLM:
+
+```bash
+ros2 topic pub --once /llm_reply std_msgs/msg/String "data: 'Hello, the pipeline is working.'"
 ```
 
 Interactive prompt and benchmark:
@@ -146,9 +183,11 @@ colcon test --packages-select voice_pipeline && colcon test-result --verbose
 - [x] Text round trip through ROS (`echo_node`)
 - [x] LLM node on Ollama, tuned for spoken-length answers
 - [x] Streaming microphone capture with VAD-style segmentation and Whisper transcription
-- [ ] `tts_node`: speak `/llm_reply` out loud
-- [ ] Launch file to bring the whole pipeline up at once
+- [x] `tts_node`: speak `/llm_reply` out loud, streamed from Kokoro
+- [x] Launch file to bring the whole pipeline up at once
+- [ ] Have `stt_node` mute itself on `/tts_speaking`, so the assistant stops hearing itself
 - [ ] Wake word / push-to-talk instead of always-on listening
+- [ ] Barge-in: cut playback when the user starts talking
 
 ## License
 
