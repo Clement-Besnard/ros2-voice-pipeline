@@ -1,0 +1,81 @@
+{
+  "id": "zfBBmd9MilX8QTFk",
+  "name": "BasicWorkflow",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "llm",
+        "responseMode": "streaming",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [0, 0],
+      "id": "8e867572-0978-4a18-9ce1-5b0c8e53b285",
+      "name": "Webhook",
+      "webhookId": "f630d572-1d77-4827-b0be-954d364684d7"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.question }}",
+        "options": {
+          "systemMessage": "You are a helpful assistant",
+          "enableStreaming": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [224, 0],
+      "id": "30ef7735-38a4-4bbf-9cfc-cc1ecd1805df",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "${N8N_OLLAMA_MODEL}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [224, 224],
+      "id": "6f68b144-343c-48ae-b51f-d5c8d923a210",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "rosPipelineOllama",
+          "name": "Ollama (voice_pipeline)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.body.session_id || 'ros-voice' }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [320, 288],
+      "id": "d99d2535-015f-4818-bb0c-214d410a92f6",
+      "name": "Simple Memory"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }]]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Simple Memory": {
+      "ai_memory": [[{ "node": "AI Agent", "type": "ai_memory", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "tags": []
+}

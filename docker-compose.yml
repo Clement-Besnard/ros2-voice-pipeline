@@ -75,6 +75,10 @@ services:
     restart: unless-stopped
     ports:
       - "${BIND_ADDR:-127.0.0.1}:5678:5678"
+    extra_hosts:
+      # Lets N8N_OLLAMA_URL point at an Ollama running on the host itself.
+      # Unused when it points at a VPN or LAN address instead.
+      - "host.docker.internal:host-gateway"
     environment:
       # Default is true, which drops the session cookie over plain HTTP from
       # anything but localhost — i.e. no login over the VPN. Set it back to
@@ -114,6 +118,34 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  n8n-init:
+    # One-shot: seeds the instance with n8n/credentials and n8n/workflows, then
+    # exits. Same image as above, so it costs no extra pull. It runs on every
+    # `up` and overwrites those workflows from the repository - see n8n/bootstrap.sh.
+    image: docker.n8n.io/n8nio/n8n:2.48.5
+    container_name: n8n_ros_init
+    restart: "no"
+    depends_on:
+      # The import commands need an instance owner, and only `n8n start` creates
+      # one, so this cannot run before the server is up.
+      n8n:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+    environment:
+      # false skips the whole thing, for when the browser becomes the source of
+      # truth for the workflows instead of this repository.
+      - N8N_BOOTSTRAP=${N8N_BOOTSTRAP:-true}
+      # Substituted into the JSON files. Ollama is not in this stack.
+      - N8N_OLLAMA_URL=${N8N_OLLAMA_URL:-http://host.docker.internal:11434}
+      - N8N_OLLAMA_MODEL=${N8N_OLLAMA_MODEL:-llama3.2}
+      # Same folder, same SQLite database and same encryption key as the server.
+      - N8N_USER_FOLDER=/home/node
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - TZ=${TZ:-Europe/Paris}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n:/bootstrap:ro
 
 volumes:
   hf-hub-cache:

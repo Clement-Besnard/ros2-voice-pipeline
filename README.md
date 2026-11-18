@@ -100,7 +100,8 @@ will need to be overridden for any other setup — see the `--ros-args` examples
 
 ## Supporting services
 
-`docker-compose.yml` brings up three containers:
+`docker-compose.yml` brings up three long-running containers, plus a one-shot `n8n-init`
+that seeds n8n and exits:
 
 | Service    | Host port | What it serves                                     |
 | ---------- | --------- | -------------------------------------------------- |
@@ -133,11 +134,10 @@ docker compose ps
 ### n8n
 
 n8n is where the assistant will eventually trigger things — a spoken request reaching a
-webhook instead of just an answer. **No node calls it yet**: the container is here so the
-workflows can be built before the ROS side exists. Open it on port `5678` and create the
-owner account on first run.
+webhook instead of just an answer. **No ROS node calls it yet**: the container is here so
+the workflows can be built before the ROS side exists.
 
-Two things worth knowing:
+Three things worth knowing:
 
 - `N8N_SECURE_COOKIE=false` is set because n8n otherwise refuses the session cookie over
   plain HTTP from anything but localhost, which means no login over the VPN. Set it back
@@ -155,6 +155,55 @@ is what the `N8N_OWNER_*` entries in `.env.example` are for. It is opt-in
 (`N8N_OWNER_MANAGED=false` by default), it still produces a login, and it only applies
 to an instance that has no owner yet. The password goes in as a bcrypt hash, with its
 dollar signs doubled so Compose does not read them as variables.
+
+#### Seeded workflows and credentials
+
+A fresh n8n otherwise comes up empty. The `n8n/` directory in this repository holds what
+it should start with, and the one-shot `n8n-init` container loads it on every
+`docker compose up`:
+
+```
+n8n/
+├── bootstrap.sh                   # runs inside the n8n image
+├── credentials/ollama.json        # the Ollama connection the nodes use
+└── workflows/basic-workflow.json  # POST /webhook/llm -> AI Agent -> Ollama
+```
+
+`N8N_OLLAMA_URL` and `N8N_OLLAMA_MODEL` from `.env` are substituted into those files
+before import, so the same JSON works on any host. The URL defaults to
+`http://host.docker.internal:11434`, which the `extra_hosts` entry on the n8n service
+makes resolvable; point it at the VPN address instead when Ollama does not listen on the
+Docker bridge. Credential data is written in clear in the repository and encrypted by n8n
+on import, so put nothing secret there — the Ollama connection has no key.
+
+A workflow whose JSON says `"active": true` is also published, which is a two-step dance
+worth knowing about: `import:workflow` always lands workflows deactivated (its
+`--activeState=fromJson` flag is refused outside queue mode), so `bootstrap.sh` calls
+`publish:workflow` afterwards. The running server applies that within about 15 seconds,
+so the webhook answers shortly after `up` returns, not instantly. Re-running also
+deactivates and republishes, so the endpoint blinks for a moment on every `up`.
+
+Two consequences:
+
+- **The repository wins.** Workflows are matched on their fixed `id` and overwritten, so
+  anything you change in the browser is undone by the next `up`. Export the workflow back
+  into `n8n/workflows/` to keep it, or set `N8N_BOOTSTRAP=false` once the browser becomes
+  the source of truth.
+- **It needs an owner account to already exist**, because the import commands assign what
+  they import to the instance owner and only `n8n start` ever creates one. That is why
+  `n8n-init` waits for the server to be healthy rather than running before it. With
+  `N8N_OWNER_MANAGED=false` and no account created by hand, the bootstrap fails with
+  `Failed to find owner` and says what to do.
+
+Once it is up, the seeded workflow answers on:
+
+```bash
+curl -N -X POST http://10.8.0.1:5678/webhook/llm -H 'Content-Type: application/json' -d '{"question": "whats the weather in paris today ?", "session_id": "ros-voice"}'
+```
+
+It streams back newline-delimited JSON. `session_id` is what the Simple Memory node keys
+the conversation on; omit it and everything shares the `ros-voice` session. That memory
+lives in the n8n process, not in the `n8n-data` volume, so it does not survive a restart.
 
 Ollama is deliberately not in the stack — it is usually already installed on the machine
 holding the GPU, and the pipeline only needs its HTTP endpoint.
