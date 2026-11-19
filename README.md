@@ -138,19 +138,19 @@ that seeds n8n and exits:
 Speaches and Kokoro both run on the GPU, and image tags are pinned.
 
 Speaches ships with no model and **does not fetch one on first use** — it answers `404
-Model is not installed locally` and `stt_node` fails on every utterance. `PRELOAD_MODELS`
-in `docker-compose.yml` therefore downloads it at startup when the `hf-hub-cache` volume
-does not already have it, and the container refuses to start if that fails. It reads
-`STT_MODEL` from `.env`, which **must match the `model` parameter of `stt_node`**; they
-are two different programs and nothing checks that they agree.
+Model is not installed locally` and `stt_node` fails on every utterance. The one-shot
+`speaches-init` container installs it once the server is healthy, reading `STT_MODEL`
+from `.env`, which **must match the `model` parameter of `stt_node`**; they are two
+different programs and nothing checks that they agree. It is idempotent: once the model
+is in the `hf-hub-cache` volume, later runs exit without downloading.
 
-So the first `docker compose up` is slow: ~1.5 GB for `distil-large-v3`, during which
-the container is legitimately unhealthy. That is why its `start_period` is ten minutes.
-Later starts find the model in the volume and come up immediately.
+Speaches 0.9 will do this itself through a `preload_models` setting, at which point the
+container can go away. It does not exist in 0.8.3, which is the latest stable release.
 
-`STT_MODEL_TTL` is how long a model stays in VRAM after its last use, 300 seconds by
-default. Set it to `-1` in `.env` to keep it resident — an idle pause then costs no
-reload, at the price of holding the VRAM.
+`WHISPER__TTL` is how long a model stays in VRAM after its last use, 300 seconds by
+default. Set `WHISPER_TTL=-1` in `.env` to keep it resident — an idle pause then costs no
+reload, at the price of holding the VRAM. Note the nesting: the flat `STT_MODEL_TTL`
+belongs to 0.9.x and is silently ignored by 0.8.3.
 
 It needs Docker Compose v2+ and the NVIDIA Container Toolkit on the host.
 
@@ -164,23 +164,26 @@ the same machine, the server's VPN address when they do not, `0.0.0.0` to serve 
 interface. Neither service authenticates, so `0.0.0.0` belongs on a trusted network
 only. The default is `127.0.0.1`, so a missing `.env` fails closed.
 
-Check they are up — on a first run, watch the model land in the volume before `speaches`
-turns healthy:
+Check they are up:
 
 ```bash
 docker compose ps
 ```
 
+On a first run, follow the model download — the only step that takes minutes:
+
 ```bash
-docker compose logs -f speaches
+docker compose logs -f speaches-init
 ```
 
-If `stt_node` still gets a 404 after that, ask the server what it actually has; an empty
-`data` list means the preload did not happen:
+If `stt_node` still gets a 404 afterwards, ask the server what it actually holds. An
+empty `data` list means the model never landed:
 
 ```bash
 curl -s http://10.8.0.1:8001/v1/models
 ```
+
+Then install it by hand, which is exactly what `speaches-init` does:
 
 ```bash
 curl -X POST http://10.8.0.1:8001/v1/models/Systran/faster-distil-whisper-large-v3

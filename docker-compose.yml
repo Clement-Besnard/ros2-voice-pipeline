@@ -22,15 +22,11 @@ services:
       # 8001 on the host to avoid a conflict on 8000
       - "${BIND_ADDR:-127.0.0.1}:8001:8000"
     environment:
-      # Speaches does NOT fetch a model on first use: it answers 404 "Model is
-      # not installed locally" and the stt_node fails on every utterance.
-      # preload_models downloads it at startup if the volume does not have it
-      # yet, and the container refuses to start if the download fails.
-      # Must match the stt_node `model` parameter, hence a single .env entry.
-      - 'PRELOAD_MODELS=["${STT_MODEL:-Systran/faster-distil-whisper-large-v3}"]'
-      # Seconds a model stays loaded after its last use. -1 never unloads it,
+      # Seconds a model stays loaded after its last use; -1 never unloads it,
       # like keep_alive does for Ollama, at the cost of holding the VRAM.
-      - STT_MODEL_TTL=${STT_MODEL_TTL:-300}
+      # The setting is nested under WhisperConfig, hence the double underscore:
+      # the flat STT_MODEL_TTL only exists from 0.9.0 and is ignored here.
+      - WHISPER__TTL=${WHISPER_TTL:-300}
     volumes:
       - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
     healthcheck:
@@ -38,15 +34,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      # Generous because the first start downloads the model before it serves
-      # anything: ~1.5 GB for distil-large-v3. Later starts find it cached.
-      # It is a grace window, not a delay: the first probe that succeeds ends
-      # it, and failures before that do not count towards `retries`.
-      start_period: 600s
-      # Probe every 5 s instead of every 30 s inside that window, so the
-      # container turns healthy right after the download rather than up to
-      # half a minute later.
+      start_period: 30s
+      # Probe every 5 s rather than every 30 s while starting, so speaches-init
+      # is released as soon as the server answers.
       start_interval: 5s
+
     deploy:
       resources:
         reservations:
@@ -54,6 +46,24 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  speaches-init:
+    # One-shot: installs the Whisper model, then exits. Speaches ships with
+    # none and answers 404 "Model is not installed locally" until one is
+    # there, which makes stt_node fail on every utterance. Skips the download
+    # when the hf-hub-cache volume already has it - see speaches/pull-model.sh.
+    image: curlimages/curl:8.11.1
+    container_name: speaches_init
+    restart: "no"
+    depends_on:
+      speaches:
+        condition: service_healthy
+    environment:
+      # Must match the `model` parameter of stt_node; nothing checks that.
+      - STT_MODEL=${STT_MODEL:-Systran/faster-distil-whisper-large-v3}
+    entrypoint: ["/bin/sh", "/bootstrap/pull-model.sh"]
+    volumes:
+      - ./speaches:/bootstrap:ro
 
   kokoro:
     # Kokoro, OpenAI-compatible: POST /v1/audio/speech
