@@ -135,9 +135,22 @@ that seeds n8n and exits:
 | `kokoro`   | `8880`    | Kokoro, the `tts_url` the `tts_node` calls          |
 | `n8n`      | `5678`    | automation editor and webhooks                      |
 
-Speaches and Kokoro both run on the GPU. Image tags are pinned, and the Whisper model is
-kept resident (`STT_MODEL_TTL=-1`) so an idle pause does not cost a model reload on the
-next utterance.
+Speaches and Kokoro both run on the GPU, and image tags are pinned.
+
+Speaches ships with no model and **does not fetch one on first use** — it answers `404
+Model is not installed locally` and `stt_node` fails on every utterance. `PRELOAD_MODELS`
+in `docker-compose.yml` therefore downloads it at startup when the `hf-hub-cache` volume
+does not already have it, and the container refuses to start if that fails. It reads
+`STT_MODEL` from `.env`, which **must match the `model` parameter of `stt_node`**; they
+are two different programs and nothing checks that they agree.
+
+So the first `docker compose up` is slow: ~1.5 GB for `distil-large-v3`, during which
+the container is legitimately unhealthy. That is why its `start_period` is ten minutes.
+Later starts find the model in the volume and come up immediately.
+
+`STT_MODEL_TTL` is how long a model stays in VRAM after its last use, 300 seconds by
+default. Set it to `-1` in `.env` to keep it resident — an idle pause then costs no
+reload, at the price of holding the VRAM.
 
 It needs Docker Compose v2+ and the NVIDIA Container Toolkit on the host.
 
@@ -151,10 +164,26 @@ the same machine, the server's VPN address when they do not, `0.0.0.0` to serve 
 interface. Neither service authenticates, so `0.0.0.0` belongs on a trusted network
 only. The default is `127.0.0.1`, so a missing `.env` fails closed.
 
-Check both are up, and that models persist in the `hf-hub-cache` volume between restarts:
+Check they are up — on a first run, watch the model land in the volume before `speaches`
+turns healthy:
 
 ```bash
 docker compose ps
+```
+
+```bash
+docker compose logs -f speaches
+```
+
+If `stt_node` still gets a 404 after that, ask the server what it actually has; an empty
+`data` list means the preload did not happen:
+
+```bash
+curl -s http://10.8.0.1:8001/v1/models
+```
+
+```bash
+curl -X POST http://10.8.0.1:8001/v1/models/Systran/faster-distil-whisper-large-v3
 ```
 
 ### n8n

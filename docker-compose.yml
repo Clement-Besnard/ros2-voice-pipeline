@@ -22,9 +22,15 @@ services:
       # 8001 on the host to avoid a conflict on 8000
       - "${BIND_ADDR:-127.0.0.1}:8001:8000"
     environment:
-      # Default is 300 s, after which the model unloads and the next utterance
-      # pays the reload. -1 keeps it resident, like keep_alive does for Ollama.
-      - STT_MODEL_TTL=300
+      # Speaches does NOT fetch a model on first use: it answers 404 "Model is
+      # not installed locally" and the stt_node fails on every utterance.
+      # preload_models downloads it at startup if the volume does not have it
+      # yet, and the container refuses to start if the download fails.
+      # Must match the stt_node `model` parameter, hence a single .env entry.
+      - 'PRELOAD_MODELS=["${STT_MODEL:-Systran/faster-distil-whisper-large-v3}"]'
+      # Seconds a model stays loaded after its last use. -1 never unloads it,
+      # like keep_alive does for Ollama, at the cost of holding the VRAM.
+      - STT_MODEL_TTL=${STT_MODEL_TTL:-300}
     volumes:
       - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
     healthcheck:
@@ -32,7 +38,15 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      # Generous because the first start downloads the model before it serves
+      # anything: ~1.5 GB for distil-large-v3. Later starts find it cached.
+      # It is a grace window, not a delay: the first probe that succeeds ends
+      # it, and failures before that do not count towards `retries`.
+      start_period: 600s
+      # Probe every 5 s instead of every 30 s inside that window, so the
+      # container turns healthy right after the download rather than up to
+      # half a minute later.
+      start_interval: 5s
     deploy:
       resources:
         reservations:
