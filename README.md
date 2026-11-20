@@ -139,10 +139,11 @@ Speaches and Kokoro both run on the GPU, and image tags are pinned.
 
 Speaches ships with no model and **does not fetch one on first use** — it answers `404
 Model is not installed locally` and `stt_node` fails on every utterance. The one-shot
-`speaches-init` container installs it once the server is healthy, reading `STT_MODEL`
-from `.env`, which **must match the `model` parameter of `stt_node`**; they are two
-different programs and nothing checks that they agree. It is idempotent: once the model
-is in the `hf-hub-cache` volume, later runs exit without downloading.
+`speaches-init` container puts it in place **before the server starts**, reading
+`STT_MODEL` from `.env`, which **must match the `model` parameter of `stt_node`**; they
+are two different programs and nothing checks that they agree. It is idempotent: once
+the model is in the `hf-hub-cache` volume, later runs exit in under a second without
+touching the network.
 
 Speaches 0.9 will do this itself through a `preload_models` setting, at which point the
 container can go away. It does not exist in 0.8.3, which is the latest stable release.
@@ -170,7 +171,10 @@ Check they are up:
 docker compose ps
 ```
 
-On a first run, follow the model download — the only step that takes minutes:
+On a first run the model download is the only step that takes minutes, and `up -d` does
+not return until it is over: `speaches` waits for that container to exit 0, so the
+prompt coming back means STT can actually serve. To watch the download itself, from
+another terminal:
 
 ```bash
 docker compose logs -f speaches-init

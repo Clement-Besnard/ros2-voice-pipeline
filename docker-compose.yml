@@ -35,9 +35,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-      # Probe every 5 s rather than every 30 s while starting, so speaches-init
-      # is released as soon as the server answers.
+      # Probe every 5 s rather than every 30 s while starting, so it reports
+      # healthy without a 30 s lag behind the server actually answering.
       start_interval: 5s
+    depends_on:
+      # The model is a prerequisite, not an afterthought: the server never
+      # starts without one, instead of starting and 404-ing every utterance.
+      # It is also what makes `docker compose up -d` block until the download
+      # is over - compose starts a dependent only once the one-shot exits 0.
+      speaches-init:
+        condition: service_completed_successfully
 
     deploy:
       resources:
@@ -48,21 +55,22 @@ services:
               capabilities: [gpu]
 
   speaches-init:
-    # One-shot: installs the Whisper model, then exits. Speaches ships with
-    # none and answers 404 "Model is not installed locally" until one is
-    # there, which makes stt_node fail on every utterance. Skips the download
-    # when the hf-hub-cache volume already has it - see speaches/pull-model.sh.
-    image: curlimages/curl:8.11.1
+    # One-shot: puts the Whisper model in the volume, then exits. Runs before
+    # the server, in the server's own image - so no extra pull, and the
+    # HuggingFace cache is written exactly the way the server reads it back.
+    # Skips the download when the model is already there, without touching the
+    # network - see speaches/pull-model.py.
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cuda-12.6.3
     container_name: speaches_init
     restart: "no"
-    depends_on:
-      speaches:
-        condition: service_healthy
     environment:
       # Must match the `model` parameter of stt_node; nothing checks that.
       - STT_MODEL=${STT_MODEL:-Systran/faster-distil-whisper-large-v3}
-    entrypoint: ["/bin/sh", "/bootstrap/pull-model.sh"]
+    # Straight to python, around the CUDA image's entrypoint: this one needs
+    # no GPU.
+    entrypoint: ["python", "/bootstrap/pull-model.py"]
     volumes:
+      - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
       - ./speaches:/bootstrap:ro
 
   kokoro:
